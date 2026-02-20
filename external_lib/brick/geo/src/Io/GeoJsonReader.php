@@ -1,0 +1,461 @@
+<?php
+
+declare(strict_types = 1);
+
+namespace Brick\Geo\Io;
+
+use Brick\Geo\CoordinateSystem;
+use Brick\Geo\Exception\GeometryException;
+use Brick\Geo\Exception\GeometryIoException;
+use Brick\Geo\Geometry;
+use Brick\Geo\GeometryCollection;
+use Brick\Geo\Io\GeoJson\Feature;
+use Brick\Geo\Io\GeoJson\FeatureCollection;
+use Brick\Geo\LineString;
+use Brick\Geo\MultiLineString;
+use Brick\Geo\MultiPoint;
+use Brick\Geo\MultiPolygon;
+use Brick\Geo\Point;
+use Brick\Geo\Polygon;
+use JsonException;
+use stdClass;
+
+/**
+ * Builds geometries out of GeoJSON text strings.
+ */
+final class GeoJsonReader
+{
+    /**
+     * The GeoJSON types, in their correct case according to the standard, indexed by their lowercase counterpart.
+     */
+    private const TYPES = [
+        'feature'            => 'Feature',
+        'featurecollection'  => 'FeatureCollection',
+        'point'              => 'Point',
+        'linestring'         => 'LineString',
+        'polygon'            => 'Polygon',
+        'multipoint'         => 'MultiPoint',
+        'multilinestring'    => 'MultiLineString',
+        'multipolygon'       => 'MultiPolygon',
+        'geometrycollection' => 'GeometryCollection',
+    ];
+
+    private readonly bool $lenient;
+
+    /**
+     * @param bool $lenient Whether to parse the GeoJSON in lenient mode.
+     *                      This mode allows for some deviations from the GeoJSON spec:
+     *                        - wrong case for GeoJSON types, e.g. POINT instead of Point
+     *                        - missing "geometry" or "properties" attributes in Features
+ *                            - nested GeometryCollections
+     */
+    public function __construct(bool $lenient = false)
+    {
+        $this->lenient = $lenient;
+    }
+
+    /**
+     * @throws GeometryException If the GeoJSON file is invalid.
+     */
+    public function read(string $geoJson): Geometry|Feature|FeatureCollection
+    {
+        try {
+            $geoJsonObject = json_decode($geoJson, flags: JSON_THROW_ON_ERROR);
+        } catch (JsonException $e) {
+            throw GeometryIoException::invalidGeoJson('Unable to parse GeoJSON string.', $e);
+        }
+
+        if (! is_object($geoJsonObject)) {
+            throw GeometryIoException::invalidGeoJson('GeoJSON string does not represent an object.');
+        }
+
+        /** @var stdClass $geoJsonObject */
+        return $this->readAsObject($geoJsonObject);
+    }
+
+    /**
+     * @throws GeometryException
+     */
+    private function readAsObject(stdClass $geoJsonObject): Geometry|Feature|FeatureCollection
+    {
+        if (! isset($geoJsonObject->type) || ! is_string($geoJsonObject->type)) {
+            throw GeometryIoException::invalidGeoJson('Missing or malformed "type" attribute.');
+        }
+
+        $geoType = $this->normalizeGeoJsonType($geoJsonObject->type);
+
+        switch ($geoType) {
+            case 'Feature':
+                return $this->readFeature($geoJsonObject);
+
+            case 'FeatureCollection':
+                return $this->readFeatureCollection($geoJsonObject);
+
+            case 'Point':
+            case 'LineString':
+            case 'Polygon':
+            case 'MultiPoint':
+            case 'MultiLineString':
+            case 'MultiPolygon':
+            case 'GeometryCollection':
+                return $this->readGeometry($geoJsonObject);
+
+            default:
+                throw GeometryIoException::unsupportedGeoJsonType($geoJsonObject->type);
+        }
+    }
+
+    /**
+     * @throws GeometryException
+     */
+    private function readFeature(stdClass $geoJsonFeature) : Feature
+    {
+        $this->verifyType($geoJsonFeature, 'Feature');
+
+        $geometry = null;
+
+        if (property_exists($geoJsonFeature, 'geometry')) {
+            if ($geoJsonFeature->geometry !== null) {
+                if (! is_object($geoJsonFeature->geometry)) {
+                    throw GeometryIoException::invalidGeoJson('Malformed "Feature.geometry" attribute.');
+                }
+
+                /** @var stdClass $geoJsonFeature->geometry */
+                $geometry = $this->readGeometry($geoJsonFeature->geometry);
+            }
+        } elseif (! $this->lenient) {
+            throw GeometryIoException::invalidGeoJson(
+                'Missing "Feature.geometry" attribute. ' .
+                'Features without geometry should use an explicit null value for this field. ' .
+                'You can ignore this error by setting the $lenient flag to true.',
+            );
+        }
+
+        $properties = null;
+
+        if (property_exists($geoJsonFeature, 'properties')) {
+            if ($geoJsonFeature->properties !== null) {
+                if (! is_object($geoJsonFeature->properties)) {
+                    throw GeometryIoException::invalidGeoJson('Malformed "Feature.properties" attribute.');
+                }
+
+                /** @var stdClass $properties */
+                $properties = $geoJsonFeature->properties;
+            }
+        } elseif (! $this->lenient) {
+            throw GeometryIoException::invalidGeoJson(
+                'Missing "Feature.properties" attribute. ' .
+                'Features without properties should use an explicit null value for this field. ' .
+                'You can ignore this error by setting the $lenient flag to true.',
+            );
+        }
+
+        return new Feature($geometry, $properties);
+    }
+
+    /**
+     * @throws GeometryException
+     */
+    private function readFeatureCollection(stdClass $geoJsonFeatureCollection) : FeatureCollection
+    {
+        $this->verifyType($geoJsonFeatureCollection, 'FeatureCollection');
+
+        if (! property_exists($geoJsonFeatureCollection, 'features')) {
+            throw GeometryIoException::invalidGeoJson('Missing "FeatureCollection.features" attribute.');
+        }
+
+        if (! is_array($geoJsonFeatureCollection->features)) {
+            throw GeometryIoException::invalidGeoJson('Malformed "FeatureCollection.features" attribute.');
+        }
+
+        $features = [];
+
+        foreach ($geoJsonFeatureCollection->features as $feature) {
+            if (! is_object($feature)) {
+                throw GeometryIoException::invalidGeoJson(sprintf(
+                    'Unexpected data of type %s in "FeatureCollection.features" attribute.',
+                    get_debug_type($features)
+                ));
+            }
+
+            /** @var stdClass $feature */
+            $features[] = $this->readFeature($feature);
+        }
+
+        return new FeatureCollection(...$features);
+    }
+
+    /**
+     * @throws GeometryException
+     */
+    private function readGeometry(stdClass $geoJsonGeometry) : Geometry
+    {
+        if (! isset($geoJsonGeometry->type) || ! is_string($geoJsonGeometry->type)) {
+            throw GeometryIoException::invalidGeoJson('Missing or malformed "Geometry.type" attribute.');
+        }
+
+        $geoType = $this->normalizeGeoJsonType($geoJsonGeometry->type);
+
+        if ($geoType === 'GeometryCollection') {
+            return $this->readGeometryCollection($geoJsonGeometry);
+        }
+
+        if (! isset($geoJsonGeometry->coordinates) || ! is_array($geoJsonGeometry->coordinates)) {
+            throw GeometryIoException::invalidGeoJson(sprintf('Missing or malformed "%s.coordinates" attribute.', $geoType));
+        }
+
+        /*
+         * TODO: we should actually check the contents of the coords array here!
+         *       Type-hints make static analysis happy, but errors will appear at runtime if the GeoJSON is invalid.
+         */
+
+        $coordinates = $geoJsonGeometry->coordinates;
+
+        $hasZ = $this->hasZ($coordinates);
+        $hasM = false;
+        $srid = 4326;
+
+        $cs = new CoordinateSystem($hasZ, $hasM, $srid);
+
+        switch ($geoType) {
+            case 'Point':
+                /** @var list<float> $coordinates */
+                return $this->genPoint($cs, $coordinates);
+
+            case 'LineString':
+                /** @var list<list<float>> $coordinates */
+                return $this->genLineString($cs, $coordinates);
+
+            case 'Polygon':
+                /** @var list<list<list<float>>> $coordinates */
+                return $this->genPolygon($cs, $coordinates);
+
+            case 'MultiPoint':
+                /** @var list<list<float>> $coordinates */
+                return $this->genMultiPoint($cs, $coordinates);
+
+            case 'MultiLineString':
+                /** @var list<list<list<float>>> $coordinates */
+                return $this->genMultiLineString($cs, $coordinates);
+
+            case 'MultiPolygon':
+                /** @var list<list<list<list<float>>>> $coordinates */
+                return $this->genMultiPolygon($cs, $coordinates);
+        }
+
+        throw GeometryIoException::unsupportedGeoJsonType($geoType);
+    }
+
+    /**
+     * @throws GeometryException
+     */
+    private function readGeometryCollection(stdClass $jsonGeometryCollection): GeometryCollection
+    {
+        $this->verifyType($jsonGeometryCollection, 'GeometryCollection');
+
+        if (! isset($jsonGeometryCollection->geometries)) {
+            throw GeometryIoException::invalidGeoJson('Missing "GeometryCollection.geometries" attribute.');
+        }
+
+        if (! is_array($jsonGeometryCollection->geometries)) {
+            throw GeometryIoException::invalidGeoJson('Malformed "GeometryCollection.geometries" attribute.');
+        }
+
+        $geometries = [];
+
+        foreach ($jsonGeometryCollection->geometries as $geometry) {
+            if (! is_object($geometry)) {
+                throw GeometryIoException::invalidGeoJson(sprintf(
+                    'Unexpected data of type %s in "GeometryCollection.geometries" attribute.',
+                    get_debug_type($geometry)
+                ));
+            }
+
+            if (isset($geometry->type) && $geometry->type === 'GeometryCollection' && ! $this->lenient) {
+                throw GeometryIoException::invalidGeoJson(
+                    'GeoJSON does not allow nested GeometryCollections. ' .
+                    'You can allow this by setting the $lenient flag to true.',
+                );
+            }
+
+            /** @var stdClass $geometry */
+            $geometries[] = $this->readGeometry($geometry);
+        }
+
+        if (! $geometries) {
+            return new GeometryCollection(CoordinateSystem::xy(4326));
+        }
+
+        return GeometryCollection::of(...$geometries);
+    }
+
+    /**
+     * [x, y]
+     *
+     * @param list<float> $coords
+     *
+     * @throws GeometryException
+     */
+    private function genPoint(CoordinateSystem $cs, array $coords) : Point
+    {
+        return new Point($cs, ...$coords);
+    }
+
+    /**
+     * [[x, y], ...]
+     *
+     * @param list<list<float>> $coords
+     *
+     * @throws GeometryException
+     */
+    private function genMultiPoint(CoordinateSystem $cs, array $coords) : MultiPoint
+    {
+        $points = [];
+
+        foreach ($coords as $pointCoords) {
+            $points[] = $this->genPoint($cs, $pointCoords);
+        }
+
+        return new MultiPoint($cs, ...$points);
+    }
+
+    /**
+     * [[x, y], ...]
+     *
+     * @param list<list<float>> $coords
+     *
+     * @throws GeometryException
+     */
+    private function genLineString(CoordinateSystem $cs, array $coords) : LineString
+    {
+        $points = [];
+
+        foreach ($coords as $pointCoords) {
+            $points[] = $this->genPoint($cs, $pointCoords);
+        }
+
+        return new LineString($cs, ...$points);
+    }
+
+    /**
+     * [[[x, y], ...], ...]
+     *
+     * @param list<list<list<float>>> $coords
+     *
+     * @throws GeometryException
+     */
+    private function genMultiLineString(CoordinateSystem $cs, array $coords) : MultiLineString
+    {
+        $lineStrings = [];
+
+        foreach ($coords as $lineStringCoords) {
+            $lineStrings[] = $this->genLineString($cs, $lineStringCoords);
+        }
+
+        return new MultiLineString($cs, ...$lineStrings);
+    }
+
+    /**
+     * [[[x, y], ...], ...]
+     *
+     * @param list<list<list<float>>> $coords
+     *
+     * @throws GeometryException
+     */
+    private function genPolygon(CoordinateSystem $cs, array $coords) : Polygon
+    {
+        $lineStrings = [];
+
+        foreach ($coords as $lineStringCoords) {
+            $lineStrings[] = $this->genLineString($cs, $lineStringCoords);
+        }
+
+        return new Polygon($cs, ...$lineStrings);
+    }
+
+    /**
+     * [[[[x, y], ...], ...], ...]
+     *
+     * @param list<list<list<list<float>>>> $coords
+     *
+     * @throws GeometryException
+     */
+    private function genMultiPolygon(CoordinateSystem $cs, array $coords) : MultiPolygon
+    {
+        $polygons = [];
+
+        foreach ($coords as $polygonCoords) {
+            $polygons[] = $this->genPolygon($cs, $polygonCoords);
+        }
+
+        return new MultiPolygon($cs, ...$polygons);
+    }
+
+    /**
+     * @psalm-suppress MixedAssignment
+     * @psalm-suppress MixedArgument
+     *
+     * @param array $coords A potentially nested list of floats.
+     */
+    private function hasZ(array $coords) : bool
+    {
+        if (empty($coords)) {
+            return false;
+        }
+
+        // At least one Geometry hasZ
+        if (! is_array($coords[0])) {
+            return 3 === count($coords);
+        }
+
+        foreach ($coords as $coord) {
+            if ($this->hasZ($coord)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @throws GeometryIoException
+     */
+    private function verifyType(stdClass $geoJsonObject, string $type): void
+    {
+        if (isset($geoJsonObject->type) && is_string($geoJsonObject->type)){
+            if ($this->normalizeGeoJsonType($geoJsonObject->type) === $type) {
+                return;
+            }
+        }
+
+        throw GeometryIoException::invalidGeoJson(sprintf('Missing or malformed "%s.type" attribute.', $type));
+    }
+
+    /**
+     * Normalizes the given GeoJSON type.
+     *
+     * If the type is not recognized, it is returned as is.
+     * If the type is recognized but in the wrong case, it is fixed in lenient mode,
+     * and an exception is thrown otherwise.
+     */
+    private function normalizeGeoJsonType(string $type) : string
+    {
+        $typeLower = strtolower($type);
+
+        if (isset(self::TYPES[$typeLower])) {
+            $correctCase = self::TYPES[$typeLower];
+
+            if ($type === $correctCase) {
+                return $type;
+            }
+
+            if ($this->lenient) {
+                return $correctCase;
+            }
+
+            throw GeometryIoException::unsupportedGeoJsonTypeWrongCase($type, $correctCase);
+        }
+
+        return $type;
+    }
+}

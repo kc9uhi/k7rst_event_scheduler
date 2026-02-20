@@ -1,0 +1,40 @@
+{
+    "name": "brick/geo",
+    "description": "GIS geometry library",
+    "type": "library",
+    "keywords": [
+        "Brick",
+        "Geo",
+        "GIS",
+        "Geography",
+        "Geometry"
+    ],
+    "license": "MIT",
+    "require": {
+        "php": "^8.1"
+    },
+    "require-dev": {
+        "ext-pdo": "*",
+        "ext-json": "*",
+        "ext-sqlite3": "*",
+        "brick/reflection": "~0.5.0",
+        "phpunit/phpunit": "^10.0",
+        "php-coveralls/php-coveralls": "^2.0",
+        "vimeo/psalm": "6.8.8"
+    },
+    "autoload": {
+        "psr-4": {
+            "Brick\\Geo\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "": "stubs/",
+            "Brick\\Geo\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "process-timeout": 600,
+        "preferred-install": "source"
+    }
+}
