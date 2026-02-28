@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /*
- self_spot.php — CACTUS self-spot tool (DX cluster via TCP/telnet)
+ self_spot.php — RST Scheduler self-spot tool (DX cluster via TCP/telnet)
 
  Requirements (defined by event config / app context):
    - EVENT_NAME (string)
@@ -31,7 +31,7 @@ if (session_status() !== PHP_SESSION_ACTIVE) {
     http_response_code(403);
     log_msg(DEBUG_WARNING, 'selfspot: no active session (not started here)');
     echo "<!doctype html><html><head><meta charset='utf-8'><title>Not authorized</title></head><body>";
-    echo "<h2>Not authorized</h2><p>Please access this page from the CACTUS scheduler while logged in.</p></body></html>";
+    echo "<h2>Not authorized</h2><p>Please access this page from the RST Scheduler while logged in.</p></body></html>";
     exit;
 }
 
@@ -63,7 +63,7 @@ if (!$edit_authorized || !$logged_in_call) {
     http_response_code(403);
     log_msg(DEBUG_WARNING, 'selfspot: unauthorized access attempt (no auth or callsign)');
     echo "<!doctype html><html><head><meta charset='utf-8'><title>Not authorized</title></head><body>";
-    echo "<h2>Not authorized</h2><p>You must be logged in to use the CACTUS self-spot tool.</p></body></html>";
+    echo "<h2>Not authorized</h2><p>You must be logged in to use the RST Scheduler self-spot tool.</p></body></html>";
     exit;
 }
 
@@ -73,7 +73,7 @@ if (empty($_SESSION['selfspot_csrf'])) {
 }
 $CSRF_TOKEN = $_SESSION['selfspot_csrf'];
 
-$DEFAULT_COMMENT = 'CACTUS Special Event';
+$DEFAULT_COMMENT = SELF_SPOT_LABEL;
 if (!empty($logged_in_call)) {
     $DEFAULT_COMMENT .= ' - op ' . strtoupper($logged_in_call)
         . (!empty($logged_in_name) ? '/' . $logged_in_name : '');
@@ -237,7 +237,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($node === null) { $node = $CLUSTER_NODES[0]; } // default first
 
     $comment = sanitize_comment($comment_raw, 160);
-    if (stripos($comment, 'cactus') === false) $comment = trim($comment . ' CACTUS Special Event');
 
     if (empty($errors)) {
         if (defined('DXSPOT_CMD')) $spot_cmd = DXSPOT_CMD;
@@ -297,7 +296,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>CACTUS Self Spot</title>
+<title>RST Scheduler Self Spot</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   :root {
@@ -391,8 +390,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </head>
 <body>
 <div class="card">
-  <h2>CACTUS Self Spot</h2>
-  <p class="small">Use only when self-spotting is permitted (e.g., session start or QSY during CACTUS).</p>
+  <h2>RST Scheduler Self Spot</h2>
+  <p class="small">Use only when self-spotting is permitted (e.g., session start or QSY during Event).</p>
   <?php if ($using_test_time): ?>
     <p class="small"><em>Using test time:</em> <?= h($nowUtc->format('Y-m-d H:i:s')) ?> UTC</p>
   <?php endif; ?>
